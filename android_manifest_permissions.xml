@@ -1,0 +1,20 @@
+<!--
+  Add these <uses-permission> lines inside the generated
+  android/app/src/main/AndroidManifest.xml, above the <application> tag.
+  Each maps to one live-data widget:
+-->
+
+<!-- Weather widget (geolocator) -->
+<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+<uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+
+<!-- Steps widget (pedometer) -->
+<uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
+
+<!-- Calendar widget (device_calendar) -->
+<uses-permission android:name="android.permission.READ_CALENDAR" />
+<uses-permission android:name="android.permission.WRITE_CALENDAR" />
+
+<!-- Theme export/import (file_picker, share_plus) need no manifest entry
+     on modern Android — they use the Storage Access Framework / share
+     sheet, not raw file permissions. -->

@@ -1,0 +1,49 @@
+name: lockforge
+description: Drag-and-drop lock screen widget builder — live data, custom fonts, theme export.
+publish_to: "none"
+version: 0.1.0
+
+environment:
+  sdk: ">=3.3.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.6
+
+  # Editor canvas is built on Flutter's own Draggable/DragTarget for free-form
+  # positioning rather than a grid-locked package — see README for why.
+  provider: ^6.1.2               # canvas + theme state management
+  uuid: ^4.5.1                   # unique ids for each placed widget
+  collection: ^1.18.0             # firstWhereOrNull used in the editor
+  shared_preferences: ^2.3.2      # local persistence — saved themes, no more losing work on close
+
+  # Live data widgets
+  pedometer: ^4.0.2              # on-device step count, no API key/account needed
+  device_calendar: ^4.3.2        # reads today's events from the device calendar
+  http: ^1.2.2                   # weather fetch (Open-Meteo — free, keyless API)
+  geolocator: ^13.0.1            # device location for the weather widget
+
+  # Theme export/import
+  file_picker: 10.3.10
+  path_provider: ^2.1.4
+  share_plus: ^10.0.2
+
+  # Home-screen widget deployment (see README re: lock-screen OS restrictions)
+  home_widget: ^0.6.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/fonts/
+  # Custom lock-screen fonts go in assets/fonts/ — add the .ttf files yourself
+  # and register them below once you've picked some, e.g.:
+  # fonts:
+  #   - family: YourDisplayFont
+  #     fonts:
+  #       - asset: assets/fonts/YourDisplayFont-Regular.ttf
