@@ -1,20 +1,12 @@
-import 'dart:async';
-import 'dart:typed_data';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import '../models/theme_pack.dart';
-import '../widgets/canvas_widget_renderer.dart';
-import '../services/weather_service.dart';
-import '../services/calendar_service.dart';
-import '../services/home_widget_service.dart';
+import '../services/live_data_service.dart';
 import '../services/wallpaper_service.dart';
+import '../widgets/theme_canvas.dart';
 
-/// Read-only, full-screen render of a ThemePack with live data flowing —
-/// this is "what it would actually look like" as opposed to the editor's
-/// placeholder values (kept cheap so dragging around the canvas doesn't
-/// spam network/sensor calls). Also pushes the same live data out to the
-/// native home-screen widget (see native_widget_snippets/android/) each
-/// time this screen opens, so opening the preview is what keeps the
-/// real widget's numbers current.
+/// Full-screen render of a ThemePack with real live data (weather, steps,
+/// next event) — "what it will actually look like". Tap anywhere to close.
 class LockPreviewScreen extends StatefulWidget {
   final ThemePack theme;
   const LockPreviewScreen({super.key, required this.theme});
@@ -25,66 +17,54 @@ class LockPreviewScreen extends StatefulWidget {
 
 class _LockPreviewScreenState extends State<LockPreviewScreen> {
   Uint8List? _wallpaperBytes;
+  LiveValues? _live;
 
   @override
   void initState() {
     super.initState();
-    _pushWidgetState();
-    if (widget.theme.useWallpaperBackground) _loadWallpaper();
+    SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+    WallpaperService.fetchWallpaperBytes().then((b) {
+      if (mounted) setState(() => _wallpaperBytes = b);
+    });
+    final use24h = widget.theme.widgets.firstOrNull?.use24HourClock ?? true;
+    LiveDataService.fetch(use24h: use24h).then((v) {
+      if (mounted) setState(() => _live = v);
+    });
   }
 
-  Future<void> _loadWallpaper() async {
-    final bytes = await WallpaperService.fetchWallpaperBytes();
-    if (mounted) setState(() => _wallpaperBytes = bytes);
-  }
-
-  Future<void> _pushWidgetState() async {
-    final now = DateTime.now();
-    final timeLabel = '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
-
-    final event = await CalendarService().fetchNextEvent();
-    final eventLabel = event == null
-        ? 'No events today'
-        : '${event.title} \u00b7 ${TimeOfDay.fromDateTime(event.start).format(context)}';
-
-    final weather = await WeatherService().fetchCurrent();
-    final weatherLabel = weather == null ? '' : '${weather.condition} ${weather.tempCelsius.round()}\u00b0C';
-
-    await HomeWidgetService.pushState(
-      timeLabel: timeLabel,
-      eventLabel: eventLabel,
-      weatherLabel: weatherLabel,
-    );
+  @override
+  void dispose() {
+    SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final theme = widget.theme;
     return Scaffold(
-      backgroundColor: theme.useWallpaperBackground ? Colors.black : theme.backgroundColor,
+      backgroundColor: Colors.black,
       body: GestureDetector(
         onTap: () => Navigator.of(context).pop(),
-        child: LayoutBuilder(builder: (context, constraints) {
-          final size = Size(constraints.maxWidth, constraints.maxHeight);
-          return Stack(
-            children: [
-              if (theme.useWallpaperBackground)
-                Positioned.fill(
-                  child: _wallpaperBytes != null
-                      ? Image.memory(_wallpaperBytes!, fit: BoxFit.cover)
-                      : Container(color: const Color(0xFF1B1B2F)),
+        child: Stack(
+          children: [
+            Positioned.fill(
+              child: FittedBox(
+                fit: BoxFit.cover,
+                child: ThemeCanvas(
+                  theme: widget.theme,
+                  canvasSize: deviceCanvasSize(context),
+                  wallpaperBytes: _wallpaperBytes,
+                  live: _live ?? const LiveValues(weather: 'Loading…', steps: '…', calendar: 'Loading…'),
                 ),
-              if (theme.useWallpaperBackground) Positioned.fill(child: Container(color: Colors.black.withOpacity(0.15))),
-              ...theme.widgets.map((config) {
-                return Positioned(
-                  left: config.xFraction * size.width,
-                  top: config.yFraction * size.height,
-                  child: CanvasWidgetRenderer(config: config, liveData: true),
-                );
-              }),
-            ],
-          );
-        }),
+              ),
+            ),
+            const Positioned(
+              left: 0,
+              right: 0,
+              bottom: 24,
+              child: Text('Tap anywhere to close', textAlign: TextAlign.center, style: TextStyle(color: Colors.white54, fontSize: 12)),
+            ),
+          ],
+        ),
       ),
     );
   }

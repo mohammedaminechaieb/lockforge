@@ -19,11 +19,8 @@ class LockForgeApp extends StatelessWidget {
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF7B2FBE), brightness: Brightness.dark),
         useMaterial3: true,
+        cardTheme: const CardThemeData(elevation: 0),
       ),
-      // Landing on the gallery instead of jumping straight into a single
-      // hardcoded editor session is what makes "multiple saved themes"
-      // actually usable — previously there was nowhere to see or switch
-      // between themes at all, only ever one in memory at a time.
       home: const ThemeGalleryScreen(),
     );
   }

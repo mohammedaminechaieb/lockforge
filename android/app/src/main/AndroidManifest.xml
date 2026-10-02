@@ -9,17 +9,27 @@
     <!-- Calendar widget (device_calendar) -->
     <uses-permission android:name="android.permission.READ_CALENDAR" />
     <uses-permission android:name="android.permission.WRITE_CALENDAR" />
-    <!-- 1. Add this permission line ABOVE <application>, alongside your other
-        <uses-permission> lines (calendar/location/activity-recognition
-        from before): -->
+    <!-- Weather fetch -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- Custom lock screen: a foreground service watches for screen-on and
+         opens LockActivity. Android 10+ only allows a background service to
+         start an activity when "display over other apps" is granted. -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
+    <!-- Editor wallpaper preview on Android 12 and lower (13+ blocks it). -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
     <application
-        android:label="lockforge"
+        android:label="LockForge"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
 
         <receiver
-            android:name="LockForgeWidgetProvider"
+            android:name=".LockForgeWidgetProvider"
             android:exported="true">
 
             <intent-filter>
@@ -57,11 +67,20 @@
         <activity
             android:name=".LockActivity"
             android:exported="false"
-            android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen"
+            android:theme="@style/LockOverlayTheme"
             android:excludeFromRecents="true"
             android:launchMode="singleInstance"
             android:taskAffinity=""
             android:showOnLockScreen="true" />
+
+        <!-- Restores the lock screen service after a reboot if it was on. -->
+        <receiver
+            android:name=".LockBootReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
 
         <!-- Service that triggers the lock overlay -->
         <service

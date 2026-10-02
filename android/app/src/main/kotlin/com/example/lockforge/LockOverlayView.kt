@@ -1,8 +1,8 @@
 package com.example.lockforge
 
-import android.app.WallpaperManager
 import android.content.Context
 import android.graphics.*
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.view.MotionEvent
@@ -10,32 +10,25 @@ import android.view.View
 import es.antonborri.home_widget.HomeWidgetPlugin
 import org.json.JSONObject
 import java.util.Calendar
-import android.graphics.drawable.BitmapDrawable
+import kotlin.math.max
 
 /**
- * Reads two things pushed from the Flutter side via home_widget's shared
- * storage (same HomeWidgetPlugin.getData() helper NightDeckWidgetProvider
- * uses — see NightDeck's project for the reference pattern):
- *   - "theme_json"       — the full ThemePack (background choice, every
- *                           widget's type/position/font/color/clock
- *                           format) pushed whenever the user opens the
- *                           in-app preview or taps "Push current design
- *                           now" on the Lock Screen settings screen.
- *   - "live_values_json" — a small map of last-known live values
- *                           {"weather": "...", "steps": "...",
- *                           "calendar": "..."} refreshed the same way.
- * "clock" widgets are rendered with a true native live clock — no need
- * to wait on a Dart push for something a Calendar object gives for free
- * — but the FORMAT (24h vs 12h, seconds, date) still follows whatever
- * the user configured in the editor, read from the pushed JSON.
- * Unlike a real AppWidget (limited to RemoteViews' small set of allowed
- * views), this is a full-screen window we own outright, so it can render
- * the exact arbitrary canvas positions/styles the user designed — no
- * RemoteViews restrictions apply here.
+ * Renders the user's design natively from what Dart pushed via home_widget:
+ *   - "theme_json"       — the full ThemePack (background + every widget)
+ *   - "live_values_json" — last-known {"weather","steps","calendar"} text
+ *
+ * Coordinates match the Flutter editor exactly: each widget's (x, y) is
+ * the CENTER of its text block as a fraction of the screen, and font
+ * sizes are Flutter logical pixels (so they're scaled by screen density).
+ *
+ * The window behind this view is transparent and shows the system
+ * wallpaper (see LockOverlayTheme), so "wallpaper" backgrounds need no
+ * permission and always match the user's current wallpaper.
  */
 class LockOverlayView(context: Context, private val onDismiss: () -> Unit) : View(context) {
 
     private val appContext = context.applicationContext
+    private val density = resources.displayMetrics.density
     private val handler = Handler(Looper.getMainLooper())
     private val tick = object : Runnable {
         override fun run() {
@@ -44,19 +37,21 @@ class LockOverlayView(context: Context, private val onDismiss: () -> Unit) : Vie
         }
     }
 
-    private var wallpaper: Bitmap? = null
+    private var cachedThemeRaw: String? = null
+    private var theme: JSONObject? = null
+    private var liveValues = JSONObject()
+    private var backgroundBitmap: Bitmap? = null
+
+    private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER }
+    private val hintPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        textAlign = Paint.Align.CENTER
+        color = Color.argb(170, 255, 255, 255)
+        textSize = 13 * density
+    }
+    private val bitmapPaint = Paint(Paint.FILTER_BITMAP_FLAG)
+
     private var downY = 0f
-
-    init {
-        loadWallpaper()
-    }
-
-    private fun loadWallpaper() {
-        runCatching {
-            val drawable = WallpaperManager.getInstance(context).drawable
-            if (drawable is BitmapDrawable) wallpaper = drawable.bitmap
-        }
-    }
+    private var dragOffset = 0f
 
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
@@ -69,104 +64,175 @@ class LockOverlayView(context: Context, private val onDismiss: () -> Unit) : Vie
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        // Simple swipe-up-to-dismiss, echoing a real lock screen gesture.
-        // (Real authentication, if the device has a secure lock set, is
-        // still enforced by Android afterward — this only dismisses OUR
-        // themed layer, see LockActivity's class doc.)
-        when (event.action) {
-            MotionEvent.ACTION_DOWN -> downY = event.y
-            MotionEvent.ACTION_UP -> if (downY - event.y > 120) onDismiss()
+        // Swipe up to dismiss — the view follows the finger like a real lock
+        // screen. Real authentication (if set) is still enforced by Android.
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                downY = event.y
+                animate().cancel()
+            }
+            MotionEvent.ACTION_MOVE -> {
+                dragOffset = (event.y - downY).coerceAtMost(0f)
+                translationY = dragOffset
+                alpha = 1f + dragOffset / height
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                if (-dragOffset > height * 0.2f) {
+                    animate().translationY(-height.toFloat()).alpha(0f).setDuration(180).withEndAction(onDismiss).start()
+                } else {
+                    animate().translationY(0f).alpha(1f).setDuration(180).start()
+                }
+                dragOffset = 0f
+            }
         }
         return true
     }
 
-    override fun onDraw(canvas: Canvas) {
-        super.onDraw(canvas)
-
+    private fun reloadIfChanged() {
         val data = HomeWidgetPlugin.getData(appContext)
-        val themeJson = data.getString("theme_json", null)
-        val theme = themeJson?.let { runCatching { JSONObject(it) }.getOrNull() }
-        val useWallpaper = theme?.optBoolean("useWallpaperBackground", true) ?: true
-
-        if (useWallpaper) {
-            wallpaper?.let {
-                val src = Rect(0, 0, it.width, it.height)
-                val dst = Rect(0, 0, width, height)
-                canvas.drawBitmap(it, src, dst, null)
-            } ?: canvas.drawColor(Color.BLACK)
-            // Dim scrim so text stays legible over a busy wallpaper — same
-            // reason every real lock screen does this.
-            canvas.drawColor(Color.argb(90, 0, 0, 0))
-        } else {
-            val bgColor = theme?.optInt("backgroundColor", Color.BLACK) ?: Color.BLACK
-            canvas.drawColor(bgColor)
+        val raw = data.getString("theme_json", null)
+        if (raw != cachedThemeRaw) {
+            cachedThemeRaw = raw
+            theme = raw?.let { runCatching { JSONObject(it) }.getOrNull() }
+            backgroundBitmap = loadBackgroundImage(theme)
         }
-
-        if (theme == null) return
-        val liveValuesJson = data.getString("live_values_json", "{}")
-        val liveValues = runCatching { JSONObject(liveValuesJson ?: "{}") }.getOrDefault(JSONObject())
-
-        val widgets = theme.optJSONArray("widgets") ?: return
-        for (i in 0 until widgets.length()) {
-            drawWidget(canvas, widgets.getJSONObject(i), liveValues)
-        }
+        liveValues = runCatching { JSONObject(data.getString("live_values_json", "{}") ?: "{}") }.getOrDefault(JSONObject())
     }
 
-    private fun drawWidget(canvas: Canvas, widget: JSONObject, liveValues: JSONObject) {
-        val type = widget.optString("type", "text")
-        val xFraction = widget.optDouble("x", 0.5)
-        val yFraction = widget.optDouble("y", 0.5)
-        val fontSize = widget.optDouble("fontSize", 24.0).toFloat()
-        val colorArgb = widget.optInt("color", Color.WHITE)
+    private fun loadBackgroundImage(theme: JSONObject?): Bitmap? {
+        if (theme?.optString("backgroundType") != "image") return null
+        val path = theme.optString("backgroundImagePath").takeIf { it.isNotEmpty() } ?: return null
+        return runCatching {
+            // Sample down to roughly screen size so a 50 MP photo doesn't OOM.
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(path, bounds)
+            val target = max(resources.displayMetrics.widthPixels, resources.displayMetrics.heightPixels)
+            var sample = 1
+            while (max(bounds.outWidth, bounds.outHeight) / (sample * 2) >= target) sample *= 2
+            BitmapFactory.decodeFile(path, BitmapFactory.Options().apply { inSampleSize = sample })
+        }.getOrNull()
+    }
 
-        val text = when (type) {
+    override fun onDraw(canvas: Canvas) {
+        super.onDraw(canvas)
+        reloadIfChanged()
+        val theme = theme
+
+        val type = theme?.optString("backgroundType")
+            ?.takeIf { it.isNotEmpty() }
+            ?: if (theme?.optBoolean("useWallpaperBackground", true) != false) "wallpaper" else "color"
+        val dim = (theme?.optDouble("dim", 0.2) ?: 0.2).toFloat().coerceIn(0f, 0.9f)
+
+        when (type) {
+            "color" -> canvas.drawColor(theme?.optInt("backgroundColor", Color.BLACK) ?: Color.BLACK)
+            "image" -> {
+                backgroundBitmap?.let { drawCenterCrop(canvas, it) } ?: canvas.drawColor(Color.BLACK)
+                canvas.drawColor(Color.argb((dim * 255).toInt(), 0, 0, 0))
+            }
+            // Wallpaper shows through the transparent window; just add the scrim.
+            else -> canvas.drawColor(Color.argb((dim * 255).toInt(), 0, 0, 0))
+        }
+
+        val widgets = theme?.optJSONArray("widgets")
+        if (widgets != null) {
+            for (i in 0 until widgets.length()) drawWidget(canvas, widgets.getJSONObject(i))
+        }
+
+        canvas.drawText("Swipe up to unlock", width / 2f, height - 48 * density, hintPaint)
+    }
+
+    private fun drawCenterCrop(canvas: Canvas, bmp: Bitmap) {
+        val scale = max(width / bmp.width.toFloat(), height / bmp.height.toFloat())
+        val w = bmp.width * scale
+        val h = bmp.height * scale
+        val left = (width - w) / 2f
+        val top = (height - h) / 2f
+        canvas.drawBitmap(bmp, null, RectF(left, top, left + w, top + h), bitmapPaint)
+    }
+
+    private fun drawWidget(canvas: Canvas, widget: JSONObject) {
+        val text = when (widget.optString("type", "text")) {
             "clock" -> liveClockText(widget)
+            "date" -> dateText()
             "text" -> widget.optString("customText", "")
             "weather" -> liveValues.optString("weather", "--")
             "steps" -> liveValues.optString("steps", "-- steps")
             "calendar" -> liveValues.optString("calendar", "No events today")
             else -> ""
         }
+        if (text.isEmpty()) return
 
-        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = colorArgb
-            textSize = fontSize
-            textAlign = Paint.Align.CENTER
+        val fontPx = widget.optDouble("fontSize", 24.0).toFloat() * density
+        textPaint.color = widget.optInt("color", Color.WHITE)
+        textPaint.textSize = fontPx
+        textPaint.typeface = typefaceFor(widget)
+        if (widget.optBoolean("shadow", true)) {
+            textPaint.setShadowLayer(fontPx * 0.15f, 0f, density, Color.argb(140, 0, 0, 0))
+        } else {
+            textPaint.clearShadowLayer()
         }
 
-        val x = (xFraction * width).toFloat()
-        val y = (yFraction * height).toFloat()
-
-        // Multi-line support (clock+date combo uses \n) — drawText doesn't
-        // wrap on its own, so split and draw each line stacked.
-        text.split("\n").forEachIndexed { index, line ->
-            canvas.drawText(line, x, y + index * (fontSize * 1.15f), paint)
+        // Center the whole (possibly multi-line) block on (x, y), with the
+        // same 1.15 line height the Flutter renderer uses. A clock's date
+        // line is a smaller caption (see dateLineSize in canvas_widget_renderer.dart).
+        val lines = text.split("\n")
+        val isClockWithDate = widget.optString("type") == "clock" && lines.size == 2
+        val sizes = lines.indices.map { i ->
+            if (isClockWithDate && i == 1) (fontPx * 0.28f).coerceIn(12 * density, 40 * density) else fontPx
+        }
+        val cx = (widget.optDouble("x", 0.5) * width).toFloat()
+        val cy = (widget.optDouble("y", 0.5) * height).toFloat()
+        var top = cy - sizes.sumOf { (it * 1.15f).toDouble() }.toFloat() / 2f
+        lines.forEachIndexed { i, line ->
+            textPaint.textSize = sizes[i]
+            val fm = textPaint.fontMetrics
+            val lineHeight = sizes[i] * 1.15f
+            val baseline = top + (lineHeight - (fm.descent - fm.ascent)) / 2f - fm.ascent
+            canvas.drawText(line, cx, baseline, textPaint)
+            top += lineHeight
         }
     }
 
+    private fun typefaceFor(widget: JSONObject): Typeface {
+        // New saves store the CSS-style weight (100..900); older ones the index.
+        val weight = when {
+            widget.has("fontWeightValue") -> widget.optInt("fontWeightValue", 400)
+            widget.has("fontWeight") -> (widget.optInt("fontWeight", 3) + 1) * 100
+            else -> 400
+        }.coerceIn(100, 900)
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            Typeface.create(Typeface.DEFAULT, weight, false)
+        } else {
+            if (weight >= 600) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
+        }
+    }
+
+    /** Must match formatClock() in lib/widgets/canvas_widget_renderer.dart. */
     private fun liveClockText(widget: JSONObject): String {
         val now = Calendar.getInstance()
         val use24h = widget.optBoolean("use24HourClock", true)
         val showSeconds = widget.optBoolean("showSeconds", false)
         val showDate = widget.optBoolean("showDateWithClock", false)
+        fun two(n: Int) = n.toString().padStart(2, '0')
 
-        val timePart = if (use24h) {
-            val h = String.format("%02d", now.get(Calendar.HOUR_OF_DAY))
-            val m = String.format("%02d", now.get(Calendar.MINUTE))
-            if (showSeconds) "$h:$m:${String.format("%02d", now.get(Calendar.SECOND))}" else "$h:$m"
+        val minute = two(now.get(Calendar.MINUTE))
+        val second = two(now.get(Calendar.SECOND))
+        val time = if (use24h) {
+            val h = two(now.get(Calendar.HOUR_OF_DAY))
+            if (showSeconds) "$h:$minute:$second" else "$h:$minute"
         } else {
-            var hour12 = now.get(Calendar.HOUR) 
-            if (hour12 == 0) hour12 = 12
-            val m = String.format("%02d", now.get(Calendar.MINUTE))
+            val h = now.get(Calendar.HOUR).let { if (it == 0) 12 else it }
             val suffix = if (now.get(Calendar.AM_PM) == Calendar.PM) "PM" else "AM"
-            if (showSeconds) "$hour12:$m:${String.format("%02d", now.get(Calendar.SECOND))} $suffix" else "$hour12:$m $suffix"
+            if (showSeconds) "$h:$minute:$second $suffix" else "$h:$minute $suffix"
         }
+        return if (showDate) "$time\n${dateText()}" else time
+    }
 
-        if (!showDate) return timePart
-
+    /** Must match formatDate() in lib/widgets/canvas_widget_renderer.dart. */
+    private fun dateText(): String {
+        val now = Calendar.getInstance()
         val weekdays = arrayOf("", "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday")
-        val months = arrayOf("", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
-        val datePart = "${weekdays[now.get(Calendar.DAY_OF_WEEK)]}, ${months[now.get(Calendar.MONTH) + 1]} ${now.get(Calendar.DAY_OF_MONTH)}"
-        return "$timePart\n$datePart"
+        val months = arrayOf("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+        return "${weekdays[now.get(Calendar.DAY_OF_WEEK)]}, ${months[now.get(Calendar.MONTH)]} ${now.get(Calendar.DAY_OF_MONTH)}"
     }
 }

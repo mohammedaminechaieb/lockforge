@@ -3,17 +3,21 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical"
-    android:background="#000000"
+    android:background="@drawable/lockforge_widget_bg"
+    android:id="@+id/widget_root"
     android:padding="16dp"
     android:gravity="center">
 
-    <TextView
+    <!-- TextClock keeps ticking on its own; a TextView froze at the last push. -->
+    <TextClock
         android:id="@+id/widget_time"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="--:--"
+        android:format12Hour="h:mm"
+        android:format24Hour="HH:mm"
+        android:fontFamily="sans-serif-light"
         android:textColor="#FFFFFF"
-        android:textSize="32sp" />
+        android:textSize="36sp" />
 
     <TextView
         android:id="@+id/widget_event"

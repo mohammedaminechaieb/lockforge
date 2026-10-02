@@ -8,20 +8,19 @@ import android.content.IntentFilter
 import android.os.Build
 import android.os.Bundle
 import android.view.WindowManager
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 
 /**
  * Shown the instant LockTriggerService sees ACTION_SCREEN_ON.
- * setShowWhenLocked(true) + setTurnScreenOn(true) is the officially
- * supported (still non-root) way for an Activity to display over the
- * keyguard — this is the same mechanism incoming-call screens and alarm
- * apps use to show over a locked device. It does NOT bypass or replace
- * the device's real security: if the device has a PIN/pattern/biometric
- * set, Android still enforces that before granting access to anything
- * behind this screen. What varies by Android version/OEM is exactly when
- * the real secure keyguard UI appears alongside this — on some builds
- * it's immediately layered, on others it only appears once the user
- * tries to proceed (swipe/tap). Either way, security is never weakened;
- * this is a themed layer at the wake moment, not an unlock mechanism.
+ * setShowWhenLocked(true) + setTurnScreenOn(true) is the supported
+ * non-root way to display over the keyguard (alarm and call screens use
+ * it). It does NOT bypass security: with a PIN/pattern/biometric set,
+ * Android still requires it before anything behind this screen.
+ *
+ * Its theme (LockOverlayTheme) is a transparent window with
+ * windowShowWallpaper, so the user's real wallpaper shows through.
  */
 class LockActivity : Activity() {
 
@@ -39,14 +38,16 @@ class LockActivity : Activity() {
             setTurnScreenOn(true)
         } else {
             @Suppress("DEPRECATION")
-            window.addFlags(
-                WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
-                    WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
-                    WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
-            )
+            window.addFlags(WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON)
         }
 
-        setContentView(LockOverlayView(this) { finish() }) // tap-to-dismiss, like a real lock screen
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        WindowCompat.getInsetsController(window, window.decorView).apply {
+            hide(WindowInsetsCompat.Type.navigationBars())
+            systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        }
+
+        setContentView(LockOverlayView(this) { finish() })
 
         val filter = IntentFilter(ACTION_DISMISS)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {

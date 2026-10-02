@@ -2,26 +2,24 @@ package com.example.lockforge
 
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.provider.Settings
 import androidx.core.app.NotificationCompat
+import androidx.core.app.ServiceCompat
 
 /**
- * ACTION_SCREEN_ON is an "implicit broadcast" — Android has forbidden
- * declaring a receiver for it in the manifest since API 26, specifically
- * to stop apps from waking up passively in the background. The only way
- * to still observe it is to register the receiver dynamically from a
- * component that's already running — hence this being a persistent
- * foreground service rather than a manifest-registered receiver. This is
- * the same approach every non-root "second lock screen" app uses.
- *
- * Started/stopped by a toggle in the Flutter UI via MainActivity's
- * MethodChannel (see native_lockscreen_snippets/android/MainActivity_additions.kt).
+ * ACTION_SCREEN_ON can't be received by a manifest receiver since API 26,
+ * so a running foreground service registers for it dynamically and opens
+ * LockActivity each time the screen wakes. Started/stopped from Dart via
+ * MainActivity's MethodChannel.
  */
 class LockTriggerService : Service() {
 
@@ -29,22 +27,27 @@ class LockTriggerService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        startForeground(NOTIF_ID, buildNotification())
+        ServiceCompat.startForeground(
+            this, NOTIF_ID, buildNotification(),
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE else 0
+        )
 
         receiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context, intent: Intent) {
                 when (intent.action) {
                     Intent.ACTION_SCREEN_ON -> {
-                        val launch = Intent(context, LockActivity::class.java).apply {
-                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_USER_ACTION)
+                        // Without "display over other apps", Android 10+ silently
+                        // blocks this launch — the settings screen checks for it.
+                        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q || Settings.canDrawOverlays(context)) {
+                            context.startActivity(
+                                Intent(context, LockActivity::class.java)
+                                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_USER_ACTION)
+                            )
                         }
-                        context.startActivity(launch)
                     }
                     Intent.ACTION_USER_PRESENT -> {
-                        // Real authentication succeeded — the system is handing
-                        // control to the actual home screen. Tell our overlay
-                        // Activity (if still around) to finish itself.
-                        context.sendBroadcast(Intent(LockActivity.ACTION_DISMISS))
+                        // Real authentication succeeded — close our themed layer.
+                        context.sendBroadcast(Intent(LockActivity.ACTION_DISMISS).setPackage(context.packageName))
                     }
                 }
             }
@@ -68,13 +71,17 @@ class LockTriggerService : Service() {
 
     private fun buildNotification(): android.app.Notification {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(CHANNEL_ID, "LockForge lock screen", NotificationManager.IMPORTANCE_MIN)
+            val channel = NotificationChannel(CHANNEL_ID, "Custom lock screen", NotificationManager.IMPORTANCE_MIN)
             getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
         }
+        val openApp = PendingIntent.getActivity(
+            this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE
+        )
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("LockForge lock screen active")
-            .setContentText("Your custom design shows when the screen wakes")
+            .setContentTitle("LockForge lock screen is on")
+            .setContentText("Tap to change your design")
             .setSmallIcon(android.R.drawable.ic_lock_lock)
+            .setContentIntent(openApp)
             .setOngoing(true)
             .build()
     }

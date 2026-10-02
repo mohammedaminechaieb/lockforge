@@ -17,13 +17,23 @@ class WeatherService {
       final hasPermission = await _ensureLocationPermission();
       if (!hasPermission) return null;
 
-      final position = await Geolocator.getCurrentPosition();
+      // A coarse fix is plenty for weather, and a time limit stops the
+      // widget hanging on "Loading…" indoors; fall back to the last fix.
+      Position? position;
+      try {
+        position = await Geolocator.getCurrentPosition(
+          locationSettings: const LocationSettings(accuracy: LocationAccuracy.low, timeLimit: Duration(seconds: 8)),
+        );
+      } catch (_) {
+        position = await Geolocator.getLastKnownPosition();
+      }
+      if (position == null) return null;
       final uri = Uri.parse(
         'https://api.open-meteo.com/v1/forecast'
         '?latitude=${position.latitude}&longitude=${position.longitude}'
         '&current=temperature_2m,weather_code',
       );
-      final response = await http.get(uri);
+      final response = await http.get(uri).timeout(const Duration(seconds: 8));
       if (response.statusCode != 200) return null;
 
       final data = jsonDecode(response.body);

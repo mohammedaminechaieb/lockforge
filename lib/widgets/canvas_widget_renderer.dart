@@ -1,140 +1,127 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import '../models/lock_widget.dart';
-import '../services/weather_service.dart';
-import '../services/health_service.dart';
-import '../services/calendar_service.dart';
+import '../services/live_data_service.dart';
 
+/// Renders one lock-screen widget as text. Clock and date are always live;
+/// the data-driven types show [live] values when given (preview) and
+/// realistic placeholders otherwise (editor, gallery thumbnails) so
+/// dragging things around never triggers network or sensor calls.
 class CanvasWidgetRenderer extends StatefulWidget {
   final LockWidgetConfig config;
-  final bool liveData; // false in the editor (shows placeholder text, cheaper), true in preview
+  final LiveValues? live;
 
-  const CanvasWidgetRenderer({super.key, required this.config, this.liveData = false});
+  /// False for gallery thumbnails — dozens of per-second timers for tiny
+  /// previews would be wasted work.
+  final bool ticking;
+
+  const CanvasWidgetRenderer({super.key, required this.config, this.live, this.ticking = true});
 
   @override
   State<CanvasWidgetRenderer> createState() => _CanvasWidgetRendererState();
 }
 
 class _CanvasWidgetRendererState extends State<CanvasWidgetRenderer> {
-  String _display = '--';
-  Timer? _clockTimer;
-  StreamSubscription<int>? _stepSub;
+  Timer? _timer;
+  DateTime _now = DateTime.now();
 
   @override
   void initState() {
     super.initState();
-    _load();
+    _syncTimer();
   }
 
   @override
   void didUpdateWidget(covariant CanvasWidgetRenderer oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.config.type != widget.config.type || oldWidget.liveData != widget.liveData) {
-      _teardown();
-      _load();
+    _syncTimer();
+  }
+
+  void _syncTimer() {
+    final needsTimer = widget.ticking &&
+        (widget.config.type == LockWidgetType.clock || widget.config.type == LockWidgetType.date);
+    if (needsTimer && _timer == null) {
+      _timer = Timer.periodic(const Duration(seconds: 1), (_) => setState(() => _now = DateTime.now()));
+    } else if (!needsTimer) {
+      _timer?.cancel();
+      _timer = null;
     }
-  }
-
-  void _load() {
-    switch (widget.config.type) {
-      case LockWidgetType.clock:
-        _updateClock();
-        _clockTimer = Timer.periodic(const Duration(seconds: 1), (_) => _updateClock());
-        break;
-      case LockWidgetType.text:
-        setState(() => _display = widget.config.customText);
-        break;
-      case LockWidgetType.weather:
-        setState(() => _display = widget.liveData ? 'Loading…' : '☀️ 21°C');
-        if (widget.liveData) {
-          WeatherService().fetchCurrent().then((reading) {
-            if (!mounted) return;
-            setState(() => _display = reading == null ? '--' : '${reading.condition} ${reading.tempCelsius.round()}°C');
-          });
-        }
-        break;
-      case LockWidgetType.steps:
-        setState(() => _display = widget.liveData ? '…' : '4,231 steps');
-        if (widget.liveData) {
-          _stepSub = HealthService().stepCountStream().listen((steps) {
-            if (!mounted) return;
-            setState(() => _display = '$steps steps');
-          }, onError: (_) {
-            if (!mounted) return;
-            setState(() => _display = '-- steps');
-          });
-        }
-        break;
-      case LockWidgetType.calendar:
-        setState(() => _display = widget.liveData ? 'Loading…' : 'Team sync · 2:00 PM');
-        if (widget.liveData) {
-          CalendarService().fetchNextEvent().then((event) {
-            if (!mounted) return;
-            setState(() => _display = event == null
-                ? 'No events today'
-                : '${event.title} · ${TimeOfDay.fromDateTime(event.start).format(context)}');
-          });
-        }
-        break;
-    }
-  }
-
-  void _updateClock() {
-    final now = DateTime.now();
-    if (!mounted) return;
-    final config = widget.config;
-    String timePart;
-    if (config.use24HourClock) {
-      final h = now.hour.toString().padLeft(2, '0');
-      final m = now.minute.toString().padLeft(2, '0');
-      timePart = config.showSeconds ? '$h:$m:${now.second.toString().padLeft(2, '0')}' : '$h:$m';
-    } else {
-      final hour12 = now.hour % 12 == 0 ? 12 : now.hour % 12;
-      final m = now.minute.toString().padLeft(2, '0');
-      final suffix = now.hour >= 12 ? 'PM' : 'AM';
-      timePart = config.showSeconds
-          ? '$hour12:$m:${now.second.toString().padLeft(2, '0')} $suffix'
-          : '$hour12:$m $suffix';
-    }
-    final datePart = config.showDateWithClock
-        ? '\n${_weekdayName(now.weekday)}, ${_monthName(now.month)} ${now.day}'
-        : '';
-    setState(() => _display = '$timePart$datePart');
-  }
-
-  String _weekdayName(int weekday) {
-    const names = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
-    return names[weekday - 1];
-  }
-
-  String _monthName(int month) {
-    const names = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-    return names[month - 1];
-  }
-
-  void _teardown() {
-    _clockTimer?.cancel();
-    _stepSub?.cancel();
   }
 
   @override
   void dispose() {
-    _teardown();
+    _timer?.cancel();
     super.dispose();
+  }
+
+  String _text() {
+    final c = widget.config;
+    final live = widget.live;
+    return switch (c.type) {
+      LockWidgetType.clock => formatClock(c, _now),
+      LockWidgetType.date => formatDate(_now),
+      LockWidgetType.text => c.customText,
+      LockWidgetType.weather => live?.weather ?? 'Clear 21°C',
+      LockWidgetType.steps => live?.steps ?? '4,231 steps',
+      LockWidgetType.calendar => live?.calendar ?? 'Team sync · 14:00',
+    };
   }
 
   @override
   Widget build(BuildContext context) {
-    final config = widget.config;
+    final c = widget.config;
+    final lines = _text().split('\n');
+    // Clock + date: the date line is a caption under the time, not a
+    // second giant line (dateLineSize mirrors the native overlay).
+    if (c.type == LockWidgetType.clock && lines.length == 2) {
+      return Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [_line(lines[0], c.fontSize), _line(lines[1], dateLineSize(c.fontSize))],
+      );
+    }
+    return _line(lines.join('\n'), c.fontSize);
+  }
+
+  Widget _line(String text, double size) {
+    final c = widget.config;
     return Text(
-      _display,
+      text,
       textAlign: TextAlign.center,
       style: TextStyle(
-        fontSize: config.fontSize,
-        color: config.color,
-        fontFamily: config.fontFamily.isEmpty ? null : config.fontFamily,
-        fontWeight: config.fontWeight,
+        fontSize: size,
+        height: 1.15,
+        color: c.color,
+        fontFamily: c.fontFamily.isEmpty ? null : c.fontFamily,
+        fontWeight: c.fontWeight,
+        fontFeatures: c.type == LockWidgetType.clock ? const [FontFeature.tabularFigures()] : null,
+        shadows: c.shadow
+            ? [Shadow(color: Colors.black.withValues(alpha: 0.55), blurRadius: size * 0.15, offset: const Offset(0, 1))]
+            : null,
       ),
     );
   }
 }
+
+/// Same formatting as LockOverlayView.liveClockText on the native side —
+/// keep the two in sync.
+String formatClock(LockWidgetConfig c, DateTime now) {
+  String two(int n) => n.toString().padLeft(2, '0');
+  final String time;
+  if (c.use24HourClock) {
+    time = c.showSeconds ? '${two(now.hour)}:${two(now.minute)}:${two(now.second)}' : '${two(now.hour)}:${two(now.minute)}';
+  } else {
+    final h = now.hour % 12 == 0 ? 12 : now.hour % 12;
+    final suffix = now.hour >= 12 ? 'PM' : 'AM';
+    time = c.showSeconds ? '$h:${two(now.minute)}:${two(now.second)} $suffix' : '$h:${two(now.minute)} $suffix';
+  }
+  return c.showDateWithClock ? '$time\n${formatDate(now)}' : time;
+}
+
+String formatDate(DateTime d) {
+  const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  return '${days[d.weekday - 1]}, ${months[d.month - 1]} ${d.day}';
+}
+
+/// Size of the date caption under a clock — keep in sync with LockOverlayView.
+double dateLineSize(double clockSize) => (clockSize * 0.28).clamp(12.0, 40.0);

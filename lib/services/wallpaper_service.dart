@@ -1,21 +1,22 @@
-import 'dart:typed_data';
 import 'package:flutter/services.dart';
 
-/// Talks to MainActivity's second MethodChannel (see
-/// native_lockscreen_snippets/android/MainActivity_REPLACEMENT.kt) to
-/// fetch the device's actual wallpaper as PNG bytes. Used by the editor
-/// so designing a layout happens against the real backdrop it'll appear
-/// over, not a flat color standing in for a photo you won't see until
-/// you open the live preview or the real overlay.
+/// Fetches the device's wallpaper as PNG bytes for the editor backdrop.
+/// Android only allows this on some versions/devices (13+ restricts it), so
+/// callers must handle null — the real lock screen still shows the actual
+/// wallpaper either way, because it draws through a transparent window.
 class WallpaperService {
   static const _channel = MethodChannel('com.example.lockforge/wallpaper');
+  static Uint8List? _cache;
+  static bool _tried = false;
 
   static Future<Uint8List?> fetchWallpaperBytes() async {
+    if (_tried) return _cache;
     try {
-      final bytes = await _channel.invokeMethod<Uint8List>('getWallpaperBytes');
-      return bytes;
+      _cache = await _channel.invokeMethod<Uint8List>('getWallpaperBytes');
     } catch (_) {
-      return null; // caller falls back to the theme's flat background color
+      _cache = null;
     }
+    _tried = true;
+    return _cache;
   }
 }
